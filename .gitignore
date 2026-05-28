@@ -1,0 +1,25 @@
+# Generated cache — rebuild with: python data_processor.py
+processed_data.pkl
+
+# Raw JSON project data (too large for GitHub, ~1 GB)
+ukri/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Streamlit runtime logs
+streamlit_out.txt
+streamlit_err.txt
+
+# Temp scripts and screenshots
+take_screenshot.py
+preview_bipartite.py
+preview_bipartite.png
+screenshot*.png
+
+# VS Code / OS
+.vscode/
+.DS_Store
+Thumbs.db
