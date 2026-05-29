@@ -1,8 +1,12 @@
-# Generated cache — rebuild with: python data_processor.py
+# Generated caches — rebuilt by data_processor.py / first dashboard run
 processed_data.pkl
+org_participation.pkl
+person_participation.pkl
+topic_participation.pkl
 
 # Raw JSON project data (too large for GitHub, ~1 GB)
 ukri/
+ukri.zip
 
 # Python
 __pycache__/
@@ -12,6 +16,7 @@ __pycache__/
 # Streamlit runtime logs
 streamlit_out.txt
 streamlit_err.txt
+streamlit.log
 
 # Temp scripts and screenshots
 take_screenshot.py

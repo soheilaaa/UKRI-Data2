@@ -16,6 +16,9 @@ from datetime import datetime
 EXCEL_PATH = Path(__file__).parent / "UKRI_Projects_Partially_Cleaned.xlsx"
 JSON_DIR = Path(__file__).parent / "ukri"
 CACHE_PATH = Path(__file__).parent / "processed_data.pkl"
+ORG_INDEX_PATH = Path(__file__).parent / "org_participation.pkl"
+TOPIC_INDEX_PATH = Path(__file__).parent / "topic_participation.pkl"
+PERSON_INDEX_PATH = Path(__file__).parent / "person_participation.pkl"
 
 SUSTAINABILITY_THEMES = {
     "Climate & Carbon": [
@@ -238,6 +241,179 @@ def build_dataset() -> pd.DataFrame:
     df["nation"] = df["region"].apply(get_nation)
 
     print(f"Dataset complete: {len(df)} projects, {df['is_sustainability'].sum()} sustainability-related")
+    return df
+
+
+def build_org_participation_index() -> pd.DataFrame:
+    """Walk every project JSON and extract organisation-level participation.
+
+    Returns one row per (project, organisation) with columns:
+      project_ref, org_id, org_name, region, roles (comma-sep), offer_grant, project_cost.
+    """
+    json_root = JSON_DIR / "ukri" if (JSON_DIR / "ukri").exists() else JSON_DIR
+    files = [f for f in json_root.iterdir() if f.suffix == ".json"]
+    print(f"Indexing organisation participation across {len(files)} JSON files...")
+    rows = []
+    for i, f in enumerate(files):
+        try:
+            with open(f, encoding="utf-8") as fp:
+                data = json.load(fp)
+            pc = data.get("projectOverview", {}).get("projectComposition", {})
+            proj = pc.get("project", {}) or {}
+            ref = proj.get("grantReference") or f.stem
+            for r in pc.get("organisationRoles", []) or []:
+                addr = r.get("address") or {}
+                rows.append({
+                    "project_ref": str(ref),
+                    "org_id": r.get("id"),
+                    "org_name": (r.get("name") or "").strip(),
+                    "region": addr.get("region") or "Unknown",
+                    "roles": ",".join((x.get("name") or "") for x in (r.get("roles") or [])),
+                    "offer_grant": r.get("offerGrant"),
+                    "project_cost": r.get("projectCost"),
+                })
+        except Exception:
+            continue
+        if (i + 1) % 2000 == 0:
+            print(f"  {i + 1}/{len(files)} files processed...")
+    return pd.DataFrame(rows)
+
+
+def get_or_build_org_index(force_rebuild: bool = False) -> pd.DataFrame:
+    if ORG_INDEX_PATH.exists() and not force_rebuild:
+        with open(ORG_INDEX_PATH, "rb") as f:
+            return pickle.load(f)
+    df = build_org_participation_index()
+    with open(ORG_INDEX_PATH, "wb") as f:
+        pickle.dump(df, f)
+    print(f"Cached org participation index to {ORG_INDEX_PATH} ({len(df)} rows)")
+    return df
+
+
+# Placeholder tags used by UKRI when topic classification is deferred or
+# absent. These are taxonomy artifacts, not real research topics, and badly
+# distort topic-level funding analysis if left in. The 'See subject area'
+# tag alone covers 280 projects with a mean award of £7.76M (mostly EPSRC
+# fellowships and large strategic-priority awards).
+TOPIC_PLACEHOLDERS = {
+    "unclassified",
+    "see subject area",
+    "see research areas",
+    "not yet classified",
+    "other",
+}
+
+
+def build_topic_index() -> pd.DataFrame:
+    """Walk every project JSON and extract research topic / subject tags.
+
+    Returns one row per (project, tag) with columns:
+      project_ref, tag, kind ('topic' | 'subject'), percentage.
+    Drops placeholder tags (see TOPIC_PLACEHOLDERS) that represent deferred
+    or absent classification rather than real topics.
+    """
+    json_root = JSON_DIR / "ukri" if (JSON_DIR / "ukri").exists() else JSON_DIR
+    files = [f for f in json_root.iterdir() if f.suffix == ".json"]
+    print(f"Indexing research topics/subjects across {len(files)} JSON files...")
+    rows = []
+    for i, f in enumerate(files):
+        try:
+            with open(f, encoding="utf-8") as fp:
+                data = json.load(fp)
+            proj = (
+                data.get("projectOverview", {})
+                    .get("projectComposition", {})
+                    .get("project", {}) or {}
+            )
+            ref = proj.get("grantReference") or f.stem
+            for t in proj.get("researchTopics", []) or []:
+                tag = (t.get("text") or "").strip()
+                if tag and tag.lower() not in TOPIC_PLACEHOLDERS:
+                    rows.append({
+                        "project_ref": str(ref),
+                        "tag": tag,
+                        "kind": "topic",
+                        "percentage": t.get("percentage"),
+                    })
+            for s in proj.get("researchSubjects", []) or []:
+                tag = (s.get("text") or "").strip()
+                if tag and tag.lower() not in TOPIC_PLACEHOLDERS:
+                    rows.append({
+                        "project_ref": str(ref),
+                        "tag": tag,
+                        "kind": "subject",
+                        "percentage": s.get("percentage"),
+                    })
+        except Exception:
+            continue
+        if (i + 1) % 2000 == 0:
+            print(f"  {i + 1}/{len(files)} files processed...")
+    return pd.DataFrame(rows)
+
+
+def get_or_build_topic_index(force_rebuild: bool = False) -> pd.DataFrame:
+    if TOPIC_INDEX_PATH.exists() and not force_rebuild:
+        with open(TOPIC_INDEX_PATH, "rb") as f:
+            return pickle.load(f)
+    df = build_topic_index()
+    with open(TOPIC_INDEX_PATH, "wb") as f:
+        pickle.dump(df, f)
+    print(f"Cached topic index to {TOPIC_INDEX_PATH} ({len(df)} rows)")
+    return df
+
+
+def build_person_index() -> pd.DataFrame:
+    """Walk every project JSON and extract people + their roles per project.
+
+    Returns one row per (project, person) with columns:
+      project_ref, person_id, full_name, role, org_name.
+    role ∈ {PRINCIPAL_INVESTIGATOR, CO_INVESTIGATOR, FELLOW, RESEARCHER, ...}.
+    A person may appear multiple times if they hold multiple roles.
+    """
+    json_root = JSON_DIR / "ukri" if (JSON_DIR / "ukri").exists() else JSON_DIR
+    files = [f for f in json_root.iterdir() if f.suffix == ".json"]
+    print(f"Indexing person participation across {len(files)} JSON files...")
+    rows = []
+    for i, f in enumerate(files):
+        try:
+            with open(f, encoding="utf-8") as fp:
+                data = json.load(fp)
+            pc = data.get("projectOverview", {}).get("projectComposition", {}) or {}
+            proj = pc.get("project", {}) or {}
+            ref = str(proj.get("grantReference") or f.stem)
+            lead_org = (pc.get("leadResearchOrganisation") or {}).get("name") or ""
+            for r in pc.get("personRoles", []) or []:
+                full = (r.get("fullName") or
+                        f"{r.get('firstName','')} {r.get('surname','')}".strip())
+                if not full or full == " ":
+                    continue
+                pid = r.get("id")
+                for role in (r.get("roles") or []):
+                    rname = role.get("name") or ""
+                    if not rname:
+                        continue
+                    rows.append({
+                        "project_ref": ref,
+                        "person_id": pid,
+                        "full_name": full.strip(),
+                        "role": rname,
+                        "org_name": lead_org.strip(),
+                    })
+        except Exception:
+            continue
+        if (i + 1) % 2000 == 0:
+            print(f"  {i + 1}/{len(files)} files processed...")
+    return pd.DataFrame(rows)
+
+
+def get_or_build_person_index(force_rebuild: bool = False) -> pd.DataFrame:
+    if PERSON_INDEX_PATH.exists() and not force_rebuild:
+        with open(PERSON_INDEX_PATH, "rb") as f:
+            return pickle.load(f)
+    df = build_person_index()
+    with open(PERSON_INDEX_PATH, "wb") as f:
+        pickle.dump(df, f)
+    print(f"Cached person index to {PERSON_INDEX_PATH} ({len(df)} rows)")
     return df
 
 
