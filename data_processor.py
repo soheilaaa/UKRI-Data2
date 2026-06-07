@@ -1,17 +1,15 @@
 """
 UKRI Sustainability Research Data Processor
-Merges Excel project metadata with JSON rich project data.
+Loads all 16,128 JSON project files as the primary data source.
+Merges corrected institution names from Excel where available.
 Classifies projects by sustainability theme via keyword matching.
 Run directly to regenerate processed_data.pkl cache.
 """
 
 import pandas as pd
 import json
-import os
-import urllib.parse
 import pickle
 from pathlib import Path
-from datetime import datetime
 
 EXCEL_PATH = Path(__file__).parent / "UKRI_Projects_Partially_Cleaned.xlsx"
 JSON_DIR = Path(__file__).parent / "ukri"
@@ -73,7 +71,7 @@ SUSTAINABILITY_THEMES = {
 }
 
 
-def classify_sustainability(text: str) -> list[str]:
+def classify_sustainability(text: str) -> list:
     """Return list of sustainability themes found in text."""
     if not text:
         return []
@@ -85,141 +83,150 @@ def classify_sustainability(text: str) -> list[str]:
     return themes
 
 
-def load_json_project(ref: str) -> dict:
-    """Load JSON file for a project reference. Returns empty dict if not found."""
-    encoded = urllib.parse.quote(str(ref), safe="") + ".json"
-    path = JSON_DIR / encoded
-    if not path.exists():
-        path = JSON_DIR / (str(ref) + ".json")
-    if not path.exists():
-        return {}
+def _parse_json_file(path: Path) -> dict:
+    """Parse one JSON file and return a flat record dict."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        return data.get("projectOverview", {}).get("projectComposition", {}).get("project", {})
     except Exception:
         return {}
 
+    comp = data.get("projectOverview", {}).get("projectComposition", {})
+    proj = comp.get("project", {}) or {}
+    lead_org = comp.get("leadResearchOrganisation", {}) or {}
+
+    fund = proj.get("fund", {}) or {}
+    funder = fund.get("funder", {}) or {}
+
+    # Dates stored as Unix ms
+    start_ms = fund.get("start")
+    end_ms = fund.get("end")
+    start_date = pd.Timestamp(start_ms, unit="ms") if start_ms else pd.NaT
+    end_date = pd.Timestamp(end_ms, unit="ms") if end_ms else pd.NaT
+
+    address = lead_org.get("address", {}) or {}
+    lead_id = lead_org.get("id", "")
+
+    org_roles = comp.get("organisationRoles", []) or []
+
+    # offer_grant / project_cost from the lead participant role
+    offer_grant = None
+    project_cost = None
+    for orole in org_roles:
+        role_names = [r.get("name") for r in (orole.get("roles") or [])]
+        if "LEAD_PARTICIPANT" in role_names and orole.get("id") == lead_id:
+            offer_grant = orole.get("offerGrant")
+            project_cost = orole.get("projectCost")
+            break
+
+    # Collaborating orgs = all org roles whose ID differs from the lead
+    collab_org_entries = [o for o in org_roles if o.get("id") and o.get("id") != lead_id]
+    collab_count = len({o["id"] for o in collab_org_entries})
+    collab_orgs = "; ".join(
+        o.get("name", "").strip()
+        for o in collab_org_entries
+        if o.get("name", "").strip()
+    )
+
+    # Investigators (PI + CoI)
+    person_roles = comp.get("personRoles", []) or []
+    investigator_names = [
+        p.get("fullName", "")
+        for p in person_roles
+        if any(r.get("name") in ("PRINCIPAL_INVESTIGATOR", "CO_INVESTIGATOR")
+               for r in (p.get("roles") or []))
+    ]
+
+    ref = proj.get("grantReference", path.stem)
+
+    return {
+        "project_ref":       ref,
+        "project_id":        proj.get("id", ""),
+        "url":               f"https://gtr.ukri.org/projects?ref={ref}",
+        "title":             proj.get("title", "") or "",
+        "status":            proj.get("status", "") or "",
+        "grant_category":    proj.get("grantCategory", "") or "",
+        "abstract":          proj.get("abstractText", "") or "",
+        "technical_summary": proj.get("technicalSummary", "") or "",
+        "fund_value":        fund.get("valuePounds"),
+        "offer_grant":       offer_grant,
+        "project_cost":      project_cost,
+        "funder":            funder.get("name", "") or "",
+        "funder_id":         funder.get("id", "") or "",
+        "institution":       lead_org.get("name", "") or "",
+        "lead_ro_id":        lead_id,
+        "region":            address.get("region", "") or "",
+        "department":        lead_org.get("department", "") or "",
+        "start_date":        start_date,
+        "end_date":          end_date,
+        "research_subjects": "; ".join(
+            s.get("text", "") for s in (proj.get("researchSubjects") or [])
+        ),
+        "research_topics":   "; ".join(
+            t.get("text", "") for t in (proj.get("researchTopics") or [])
+            if t.get("text") != "Unclassified"
+        ),
+        "health_categories": "; ".join(
+            h.get("text", "") for h in (proj.get("healthCategories") or [])
+        ),
+        "publication_count": len(proj.get("publications") or []),
+        "investigators":     "; ".join(investigator_names),
+        "collab_count":      collab_count,
+        "collab_orgs":       collab_orgs,
+    }
+
 
 def build_dataset() -> pd.DataFrame:
-    """Build full merged dataset from Excel + JSON files."""
-    print("Loading Excel file...")
-    df = pd.read_excel(EXCEL_PATH, engine="openpyxl")
+    """Build full dataset from all JSON files in ukri/."""
+    json_files = sorted(JSON_DIR.glob("*.json"))
+    total = len(json_files)
+    print(f"Loading {total} JSON project files...")
 
-    # Standardise column names
-    col_map = {}
-    for c in df.columns:
-        if "Fund value" in c:
-            col_map[c] = "fund_value"
-        elif "Offer grant" in c:
-            col_map[c] = "offer_grant"
-        elif "Project cost" in c:
-            col_map[c] = "project_cost"
-        elif "Investigators" in c:
-            col_map[c] = "investigators"
-        elif "Additional organisations" in c and "Corrected" not in c:
-            col_map[c] = "additional_orgs"
-        elif "Corrected additional" in c:
-            col_map[c] = "corrected_additional_orgs"
-    df = df.rename(columns=col_map)
-    df = df.rename(columns={
-        "Project reference": "project_ref",
-        "Project ID": "project_id",
-        "GTR Project URL": "url",
-        "Title": "title",
-        "Start Date": "start_date",
-        "End Date": "end_date",
-        "Region": "region",
-        "Status": "status",
-        "Lead RO Name": "lead_ro",
-        "Corrected Lead RO Name": "corrected_lead_ro",
-        "Lead RO ID": "lead_ro_id",
-        "Department": "department",
-        "Funding Org ID": "funder_id",
-        "Funding Org Name": "funder",
-    })
+    records = []
+    for i, path in enumerate(json_files):
+        rec = _parse_json_file(path)
+        if rec:
+            records.append(rec)
+        if (i + 1) % 2000 == 0:
+            print(f"  {i + 1}/{total}...")
 
-    # Numeric funding
+    df = pd.DataFrame(records)
+    print(f"Loaded {len(df)} projects.")
+
+    # Merge corrected institution names from the partial Excel where available
+    if EXCEL_PATH.exists():
+        print("Merging corrected institution names from Excel...")
+        xl = pd.read_excel(EXCEL_PATH, engine="openpyxl")
+        corr_col = next(
+            (c for c in xl.columns if "Corrected" in c and "Lead RO" in c), None
+        )
+        ref_col = next(
+            (c for c in xl.columns if "Project reference" in c), None
+        )
+        if corr_col and ref_col:
+            xl_map = (
+                xl[[ref_col, corr_col]]
+                .dropna(subset=[corr_col])
+                .rename(columns={ref_col: "project_ref", corr_col: "corrected_institution"})
+            )
+            df = df.merge(xl_map, on="project_ref", how="left")
+            df["institution"] = df["corrected_institution"].fillna(df["institution"]).str.strip()
+            df = df.drop(columns=["corrected_institution"])
+
+    # Numeric columns
     for col in ["fund_value", "offer_grant", "project_cost"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Dates
-    for col in ["start_date", "end_date"]:
-        df[col] = pd.to_datetime(df[col], errors="coerce")
+    # Date-derived columns
+    df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce")
+    df["end_date"] = pd.to_datetime(df["end_date"], errors="coerce")
     df["start_year"] = df["start_date"].dt.year
     df["end_year"] = df["end_date"].dt.year
     df["duration_years"] = (
         (df["end_date"] - df["start_date"]).dt.days / 365.25
     ).round(1)
 
-    # Institution name normalisation (use corrected if available)
-    df["institution"] = df["corrected_lead_ro"].fillna(df["lead_ro"]).str.strip()
-
-    # Collaboration count
-    def count_orgs(val):
-        if pd.isna(val) or str(val).strip() == "":
-            return 0
-        return len([x for x in str(val).split(";") if x.strip()])
-
-    df["collab_count"] = df.get("corrected_additional_orgs", df.get("additional_orgs", pd.Series())).apply(count_orgs)
-
-    # Enrich from JSON
-    print(f"Loading JSON data for {len(df)} projects...")
-    abstracts, subjects, topics, health_cats, publications, grant_cats, tech_summaries = (
-        [], [], [], [], [], [], []
-    )
-
-    for i, row in df.iterrows():
-        proj = load_json_project(row["project_ref"])
-        abstracts.append(proj.get("abstractText") or "")
-        subjects.append(
-            "; ".join(s.get("text", "") for s in proj.get("researchSubjects", []))
-        )
-        topics.append(
-            "; ".join(t.get("text", "") for t in proj.get("researchTopics", []) if t.get("text") != "Unclassified")
-        )
-        health_cats.append(
-            "; ".join(h.get("text", "") for h in proj.get("healthCategories", []))
-        )
-        publications.append(len(proj.get("publications", [])))
-        grant_cats.append(proj.get("grantCategory") or "")
-        tech_summaries.append(proj.get("technicalSummary") or "")
-
-        if (i + 1) % 200 == 0:
-            print(f"  Processed {i + 1}/{len(df)}...")
-
-    df["abstract"] = abstracts
-    df["research_subjects"] = subjects
-    df["research_topics"] = topics
-    df["health_categories"] = health_cats
-    df["publication_count"] = publications
-    df["grant_category"] = grant_cats
-    df["technical_summary"] = tech_summaries
-
-    # Sustainability classification
-    print("Classifying sustainability themes...")
-    combined_text = df["title"].fillna("") + " " + df["abstract"].fillna("")
-
-    theme_cols = {}
-    all_themes = []
-    for theme in SUSTAINABILITY_THEMES:
-        mask = combined_text.apply(lambda t, th=theme: th in classify_sustainability(t))
-        theme_cols[f"theme_{theme.lower().replace(' ', '_').replace('&', 'and')}"] = mask
-        all_themes.append(mask)
-
-    for col, mask in theme_cols.items():
-        df[col] = mask
-
-    df["is_sustainability"] = pd.concat(all_themes, axis=1).any(axis=1)
-    df["sustainability_themes"] = combined_text.apply(
-        lambda t: "; ".join(classify_sustainability(t))
-    )
-    df["theme_count"] = df["sustainability_themes"].apply(
-        lambda t: len([x for x in t.split(";") if x.strip()]) if t else 0
-    )
-
-    # UK nation derived from region
+    # Nation from region
     nation_map = {
         "Scotland": "Scotland",
         "Wales": "Wales",
@@ -240,7 +247,29 @@ def build_dataset() -> pd.DataFrame:
 
     df["nation"] = df["region"].apply(get_nation)
 
-    print(f"Dataset complete: {len(df)} projects, {df['is_sustainability'].sum()} sustainability-related")
+    # Sustainability classification
+    print("Classifying sustainability themes...")
+    combined_text = df["title"].fillna("") + " " + df["abstract"].fillna("")
+
+    all_theme_masks = []
+    for theme in SUSTAINABILITY_THEMES:
+        col = "theme_" + theme.lower().replace(" ", "_").replace("&", "and")
+        mask = combined_text.apply(lambda t, th=theme: th in classify_sustainability(t))
+        df[col] = mask
+        all_theme_masks.append(mask)
+
+    df["is_sustainability"] = pd.concat(all_theme_masks, axis=1).any(axis=1)
+    df["sustainability_themes"] = combined_text.apply(
+        lambda t: "; ".join(classify_sustainability(t))
+    )
+    df["theme_count"] = df["sustainability_themes"].apply(
+        lambda t: len([x for x in t.split(";") if x.strip()]) if t else 0
+    )
+
+    print(
+        f"Dataset complete: {len(df)} projects, "
+        f"{df['is_sustainability'].sum()} sustainability-related"
+    )
     return df
 
 
@@ -435,6 +464,7 @@ if __name__ == "__main__":
     print(df[["project_ref", "title", "funder", "fund_value", "start_year",
               "region", "is_sustainability", "sustainability_themes",
               "publication_count"]].head(10).to_string())
-    print(f"\nTotal funding: £{df['fund_value'].sum():,.0f}")
-    print(f"Sustainability projects: {df['is_sustainability'].sum()} / {len(df)}")
-    print(f"Funders: {df['funder'].value_counts().to_dict()}")
+    print(f"\nTotal projects:  {len(df):,}")
+    print(f"Total funding:   £{df['fund_value'].sum():,.0f}")
+    print(f"Sustainability:  {df['is_sustainability'].sum():,} / {len(df):,}")
+    print(f"Funders: {df['funder'].value_counts().head(10).to_dict()}")

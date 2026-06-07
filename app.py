@@ -107,7 +107,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**Data sources**")
-    st.markdown("UKRI Gateway to Research API  \nExcel: 1,383 curated projects  \nJSON: 16,128 project records")
+    st.markdown("UKRI Gateway to Research API  \n16,128 project records (all JSON files)")
 
 # ── Apply filters ─────────────────────────────────────────────────────────────
 df = df_all.copy()
@@ -840,7 +840,7 @@ with tab5:
         for _, row in _df.iterrows():
             lead = str(row["institution"]).strip().lower()
             inst_region[lead] = str(row.get("region") or "Unknown")
-            orgs_raw = str(row.get("corrected_additional_orgs", "") or "")
+            orgs_raw = str(row.get("collab_orgs", "") or "")
             if not orgs_raw or orgs_raw == "nan":
                 continue
             for org in orgs_raw.split(";"):
@@ -870,7 +870,7 @@ with tab5:
 
         return sub, community_map
 
-    G_collab, community_map = build_collab_network("collab_v3", top_n=22, min_edge_weight=3)
+    G_collab, community_map = build_collab_network("collab_v4_full16k", top_n=22, min_edge_weight=3)
 
     @st.cache_data(show_spinner="Rendering network figure…")
     def render_collab_matplotlib(_G, _community_map):
@@ -2461,7 +2461,7 @@ with tab6:
 st.markdown("---")
 st.markdown(
     "<small>Data: UKRI Gateway to Research (GTR) API · "
-    "Projects: 1,383 curated records · JSON: 16,128 project files · "
+    "Projects: 16,128 · "
     "Analysis: keyword classification across 8 sustainability themes · "
     "Dashboard built for *Nature Sustainability* submission</small>",
     unsafe_allow_html=True,
