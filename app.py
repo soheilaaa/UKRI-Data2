@@ -73,6 +73,111 @@ COUNCIL_COLORS = {
 }
 THEME_COLORS = px.colors.qualitative.Set2
 
+# ── Sub-themes ────────────────────────────────────────────────────────────────
+# Each theme's keyword list (from data_processor.SUSTAINABILITY_THEMES) is
+# partitioned into coherent sub-themes. The union of a theme's sub-theme
+# keywords equals that theme's full keyword list, so the two tiers are
+# consistent (theme funding = sum of its sub-theme funding).
+SUB_THEMES = {
+    "Climate & Carbon": {
+        "Climate Change & Warming": [
+            "climate change", "climate crisis", "global warming",
+            "greenhouse gas", "co2", "methane", "paris agreement",
+        ],
+        "Net Zero & Decarbonisation": [
+            "net zero", "net-zero", "decarbonisation", "decarbonization",
+        ],
+        "Carbon Capture & Removal": [
+            "carbon", "carbon capture", "carbon sequestration",
+        ],
+        "Adaptation & Mitigation": [
+            "climate adaptation", "climate mitigation",
+        ],
+    },
+    "Clean Energy": {
+        "Solar": ["solar energy", "solar cell", "solar panel", "photovoltaic"],
+        "Wind": ["wind energy", "wind turbine", "offshore wind"],
+        "Storage & Hydrogen": [
+            "hydrogen energy", "energy storage", "battery storage", "fuel cell",
+        ],
+        "Other Renewables & Transition": [
+            "renewable energy", "energy transition", "clean energy",
+            "low carbon energy", "nuclear fusion", "tidal energy", "geothermal",
+        ],
+    },
+    "Environment & Ecology": {
+        "Biodiversity & Wildlife": [
+            "biodiversity", "wildlife", "species extinction",
+            "ecosystem", "ecological",
+        ],
+        "Conservation & Restoration": [
+            "conservation", "nature-based", "rewilding", "habitat loss",
+            "deforestation", "land degradation",
+        ],
+        "Pollution & Air Quality": [
+            "pollution", "air quality", "microplastic", "environmental impact",
+        ],
+    },
+    "Water & Oceans": {
+        "Freshwater & Supply": [
+            "water quality", "water security", "water resource",
+            "freshwater", "hydrological", "wastewater",
+        ],
+        "Oceans & Marine": [
+            "ocean", "marine ecosystem", "coastal", "blue carbon",
+            "coral reef", "sea level", "ocean acidification",
+        ],
+        "Flood & Drought": ["flood risk", "drought"],
+    },
+    "Food & Agriculture": {
+        "Food Security & Systems": [
+            "food security", "food system", "food production", "food waste",
+        ],
+        "Sustainable Farming": [
+            "sustainable agriculture", "agroecology", "precision agriculture",
+            "agri-environment", "sustainable farming", "agricultural sustainability",
+        ],
+        "Soil & Crops": [
+            "crop resilience", "soil health", "soil carbon", "land use",
+        ],
+    },
+    "Circular Economy": {
+        "Recycling & Waste": [
+            "recycling", "waste reduction", "plastic pollution", "reuse",
+            "upcycling", "material recovery", "end of life",
+        ],
+        "Sustainable Materials": ["sustainable materials", "bioplastic"],
+        "Resource Efficiency & Manufacturing": [
+            "circular economy", "resource efficiency", "industrial ecology",
+            "cradle to cradle", "sustainable manufacturing",
+        ],
+    },
+    "Sustainable Cities": {
+        "Urban Planning & Built Environment": [
+            "sustainable city", "urban sustainability", "smart city",
+            "urban planning", "built environment", "green infrastructure",
+            "urban heat",
+        ],
+        "Sustainable Transport": [
+            "transport decarbonisation", "sustainable transport",
+            "active travel", "electric vehicle", "zero emission",
+        ],
+    },
+    "Social Sustainability": {
+        "Justice & Equity": [
+            "environmental justice", "climate justice", "health inequality",
+            "low income", "vulnerable communities",
+        ],
+        "Development & SDGs": [
+            "sustainable development", "sdg", "community resilience",
+        ],
+        "Policy & Just Transition": [
+            "just transition", "green jobs", "sustainability governance",
+            "sustainability policy",
+        ],
+    },
+}
+
 # ── Data loading ──────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner="Loading UKRI project data…")
 def load_data():
@@ -296,8 +401,22 @@ with tab1:
         _chart(fig_cnt, "ukri_project_count_by_year")
 
     # Grant size distribution
-    st.markdown('<div class="section-header">Grant Size Distribution by Council</div>', unsafe_allow_html=True)
-    box_df = df[df["fund_value"].notna() & (df["fund_value"] > 0)].copy()
+    st.markdown('<div class="section-header">Grant Size Distribution: Top 10 Councils by Sustainability Funding</div>', unsafe_allow_html=True)
+    # Rank councils by total sustainability funding, keep the top 10
+    top10_councils = (
+        df[df["is_sustainability"] & df["fund_value"].notna()]
+        .groupby("funder")["fund_value"]
+        .sum()
+        .sort_values(ascending=False)
+        .head(10)
+        .index
+        .tolist()
+    )
+    box_df = df[
+        df["fund_value"].notna()
+        & (df["fund_value"] > 0)
+        & df["funder"].isin(top10_councils)
+    ].copy()
     box_df["funding_M"] = box_df["fund_value"] / 1e6
     fig_box = px.box(
         box_df,
@@ -305,10 +424,16 @@ with tab1:
         y="funding_M",
         color="funder",
         color_discrete_map=COUNCIL_COLORS,
-        points=False,
+        points="all",
         labels={"funding_M": "Grant Size (£M)", "funder": "Council"},
         template="plotly_white",
         log_y=True,
+        category_orders={"funder": top10_councils},
+    )
+    fig_box.update_traces(
+        marker=dict(size=3, opacity=0.35),
+        jitter=0.4,
+        pointpos=0,
     )
     fig_box.update_layout(showlegend=False, height=340, margin=dict(t=10))
     _chart(fig_box, "ukri_grant_size_by_council")
@@ -435,6 +560,40 @@ with tab2:
 # ═════════════════════════════════════════════════════════════════════════════
 with tab3:
     st.markdown('<div class="section-header">Top 20 Institutions by Total Funding</div>', unsafe_allow_html=True)
+    st.caption(
+        "Bar length = total funding. **Colour = interdisciplinarity index** — the Shannon "
+        "diversity of an institution's declared research subjects across its portfolio "
+        "(0 = all projects in a single discipline; higher = funding spread more evenly "
+        "across many disciplines). Sustainability share (keyword classification of titles "
+        "and abstracts across 8 themes) is shown on hover."
+    )
+
+    # ── Interdisciplinarity index: Shannon diversity of research subjects ───────
+    @st.cache_data(show_spinner=False)
+    def _institution_interdisciplinarity(data_key):
+        import math
+        from collections import Counter
+        rows = []
+        for inst, grp in df.groupby("institution"):
+            counter = Counter()
+            for s in grp["research_subjects"]:
+                for subj in str(s).split(";"):
+                    subj = subj.strip()
+                    if subj:
+                        counter[subj] += 1
+            total = sum(counter.values())
+            if total > 0:
+                shannon = -sum((c / total) * math.log(c / total) for c in counter.values())
+            else:
+                shannon = 0.0
+            rows.append({
+                "institution": inst,
+                "interdisc": round(shannon, 2),
+                "n_subjects": len(counter),
+            })
+        return pd.DataFrame(rows)
+
+    interdisc_df = _institution_interdisciplinarity(f"interdisc_{len(df)}_{df['fund_value'].sum():.0f}")
 
     inst_df = (
         df.groupby("institution")
@@ -447,6 +606,7 @@ with tab3:
             avg_collabs=("collab_count", "mean"),
         )
         .reset_index()
+        .merge(interdisc_df, on="institution", how="left")
         .sort_values("funding", ascending=False)
     )
     inst_df["funding_M"] = inst_df["funding"] / 1e6
@@ -460,12 +620,27 @@ with tab3:
         x=top20["funding_M"],
         orientation="h",
         marker=dict(
-            color=top20["sus_pct"],
-            colorscale="Greens",
-            colorbar=dict(title="% Sustainability"),
+            color=top20["interdisc"],
+            colorscale="Viridis",
+            colorbar=dict(title="Interdisciplinarity<br>(subject diversity)"),
         ),
         text=[f"£{v:.0f}M" for v in top20["funding_M"]],
         textposition="outside",
+        customdata=np.stack([
+            top20["interdisc"],
+            top20["n_subjects"],
+            top20["projects"],
+            top20["sus_pct"],
+        ], axis=-1),
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            "Total funding: £%{x:.0f}M<br>"
+            "Interdisciplinarity index: %{customdata[0]:.2f}<br>"
+            "Distinct research subjects: %{customdata[1]}<br>"
+            "Projects: %{customdata[2]}<br>"
+            "Sustainability share: %{customdata[3]:.0f}%"
+            "<extra></extra>"
+        ),
     ))
     fig_inst.update_layout(
         xaxis_title="Total Funding (£M)",
@@ -480,34 +655,66 @@ with tab3:
 
     with col_a:
         st.markdown('<div class="section-header">Institution: Funding vs. Projects vs. Publications</div>', unsafe_allow_html=True)
+        st.caption(
+            "Bubble size = publications. **Colour = interdisciplinarity index** (Shannon "
+            "diversity of declared research subjects). Sustainability share — keyword "
+            "classification of titles and abstracts across 8 themes — is shown on hover."
+        )
         top50 = inst_df[inst_df["projects"] >= 3].head(50)
         fig_bubble = px.scatter(
             top50,
             x="projects",
             y="funding_M",
             size="total_pubs",
-            color="sus_pct",
-            color_continuous_scale="Greens",
+            color="interdisc",
+            color_continuous_scale="Viridis",
             hover_name="institution",
+            hover_data={
+                "interdisc": ":.2f",
+                "n_subjects": True,
+                "sus_pct": ":.0f",
+                "total_pubs": True,
+            },
             labels={
                 "projects": "Number of Projects",
                 "funding_M": "Total Funding (£M)",
                 "total_pubs": "Publications",
+                "interdisc": "Interdisciplinarity",
+                "n_subjects": "Distinct subjects",
                 "sus_pct": "% Sustainability",
             },
             template="plotly_white",
             size_max=40,
         )
-        fig_bubble.update_layout(height=420, margin=dict(t=10))
+        fig_bubble.update_layout(
+            height=420,
+            margin=dict(t=10),
+            coloraxis_colorbar_title="Interdiscip.<br>(subj. diversity)",
+        )
         _chart(fig_bubble, "ukri_institution_funding_vs_projects")
 
     with col_b:
         st.markdown('<div class="section-header">Department-Level Funding (Top 15)</div>', unsafe_allow_html=True)
+        st.caption(
+            "Lead departments recorded in project metadata — a subject-level view of where "
+            "funding concentrates. Projects with no department recorded "
+            f"({(df['department'].fillna('').str.strip() == '').sum():,} of {len(df):,}) are excluded."
+        )
+        dept_clean = df["department"].fillna("").str.strip()
+        dept_mask = (
+            (dept_clean != "")
+            & (dept_clean.str.upper() != "UNLISTED")
+        )
         dept_df = (
-            df[df["department"].notna() & (df["department"].str.upper() != "UNLISTED")]
-            .groupby("department")["fund_value"]
-            .sum()
+            df[dept_mask]
+            .groupby(dept_clean[dept_mask])
+            .agg(
+                fund_value=("fund_value", "sum"),
+                projects=("project_ref", "count"),
+                insts=("institution", "nunique"),
+            )
             .reset_index()
+            .rename(columns={"department": "department"})
             .sort_values("fund_value", ascending=False)
             .head(15)
         )
@@ -518,9 +725,19 @@ with tab3:
             x="funding_M",
             orientation="h",
             color="funding_M",
-            color_continuous_scale="Blues",
+            color_continuous_scale="Tealgrn",
             labels={"funding_M": "Funding (£M)", "department": ""},
+            custom_data=["projects", "insts"],
             template="plotly_white",
+        )
+        fig_dept.update_traces(
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "Funding: £%{x:.0f}M<br>"
+                "Projects: %{customdata[0]}<br>"
+                "Institutions: %{customdata[1]}"
+                "<extra></extra>"
+            )
         )
         fig_dept.update_layout(showlegend=False, height=420, margin=dict(t=10), coloraxis_showscale=False)
         _chart(fig_dept, "ukri_department_funding")
@@ -588,7 +805,7 @@ with tab4:
             x="projects",
             orientation="h",
             color="funding_M",
-            color_continuous_scale="Greens",
+            color_continuous_scale="Tealgrn",
             labels={"projects": "Projects", "theme": "", "funding_M": "Funding (£M)"},
             template="plotly_white",
         )
@@ -597,18 +814,57 @@ with tab4:
 
     with col_b:
         # Theme funding donut
-        st.markdown('<div class="section-header">Sustainability Funding by Theme (£M)</div>', unsafe_allow_html=True)
-        fig_th_pie = px.pie(
-            th_df.sort_values("funding_M", ascending=False),
-            names="theme",
+        st.markdown('<div class="section-header">Sustainability Funding: Theme → Sub-theme (£M)</div>', unsafe_allow_html=True)
+        st.caption(
+            "Inner ring = theme, outer ring = sub-theme. Each project's funding is "
+            "attributed to the sub-theme whose keywords it matches most strongly, so "
+            "every theme total equals the sum of its sub-themes."
+        )
+
+        @st.cache_data(show_spinner=False)
+        def _theme_subtheme_funding(data_key):
+            texts = (df["title"].fillna("") + " " + df["abstract"].fillna("")).str.lower()
+            funds = df["fund_value"].fillna(0)
+            records = {}
+            for theme, subs in SUB_THEMES.items():
+                col_key = "theme_" + theme.lower().replace(" ", "_").replace("&", "and")
+                if col_key not in df.columns:
+                    continue
+                matched = df[col_key].values
+                for txt, fund, m in zip(texts, funds, matched):
+                    if not m:
+                        continue
+                    best_sub, best_hits = None, -1
+                    for sub_name, kws in subs.items():
+                        hits = sum(1 for kw in kws if kw in txt)
+                        if hits > best_hits:
+                            best_hits, best_sub = hits, sub_name
+                    if best_sub is not None:
+                        key = (theme, best_sub)
+                        records[key] = records.get(key, 0.0) + fund
+            return pd.DataFrame(
+                [{"theme": t, "subtheme": s, "funding_M": v / 1e6}
+                 for (t, s), v in records.items()]
+            )
+
+        sub_funding_df = _theme_subtheme_funding(
+            f"subtheme_{len(df)}_{df['fund_value'].sum():.0f}"
+        )
+        fig_th_sun = px.sunburst(
+            sub_funding_df,
+            path=["theme", "subtheme"],
             values="funding_M",
-            hole=0.4,
+            color="theme",
             color_discrete_sequence=THEME_COLORS,
             template="plotly_white",
         )
-        fig_th_pie.update_traces(textposition="inside", textinfo="percent+label")
-        fig_th_pie.update_layout(showlegend=False, height=400, margin=dict(t=10))
-        _chart(fig_th_pie, "ukri_sustainability_funding_by_theme")
+        fig_th_sun.update_traces(
+            textinfo="label+percent parent",
+            insidetextorientation="radial",
+            hovertemplate="<b>%{label}</b><br>£%{value:.0f}M<br>%{percentRoot:.1%} of total<extra></extra>",
+        )
+        fig_th_sun.update_layout(height=420, margin=dict(t=10, l=0, r=0, b=0))
+        _chart(fig_th_sun, "ukri_sustainability_funding_by_theme")
 
     # Theme evolution over time
     st.markdown('<div class="section-header">Sustainability Theme Evolution (Projects per Year)</div>', unsafe_allow_html=True)
@@ -657,6 +913,35 @@ with tab4:
         fig_tc.update_layout(height=380, margin=dict(t=10))
         _chart(fig_tc, "ukri_theme_council_heatmap")
 
+    # Theme × council — funding size
+    st.markdown('<div class="section-header">Sustainability Theme × Funding Council (Total Funding £M)</div>', unsafe_allow_html=True)
+    th_council_fund_rows = []
+    for theme in SUSTAINABILITY_THEMES:
+        col_key = "theme_" + theme.lower().replace(" ", "_").replace("&", "and")
+        if col_key in df.columns:
+            sub = (
+                df[df[col_key]]
+                .groupby("funder")["fund_value"]
+                .sum()
+                .reset_index(name="funding")
+            )
+            sub["theme"] = theme
+            th_council_fund_rows.append(sub)
+    if th_council_fund_rows:
+        tcf_df = pd.concat(th_council_fund_rows)
+        tcf_df["funding_M"] = tcf_df["funding"] / 1e6
+        tcf_pivot = tcf_df.pivot(index="theme", columns="funder", values="funding_M").fillna(0)
+        fig_tcf = px.imshow(
+            tcf_pivot,
+            aspect="auto",
+            color_continuous_scale="YlOrRd",
+            labels=dict(color="£M"),
+            template="plotly_white",
+            text_auto=".0f",
+        )
+        fig_tcf.update_layout(height=380, margin=dict(t=10))
+        _chart(fig_tcf, "ukri_theme_council_funding_heatmap")
+
     # Theme × region
     st.markdown('<div class="section-header">Sustainability Theme × Region (Project Count)</div>', unsafe_allow_html=True)
     th_reg_rows = []
@@ -680,24 +965,108 @@ with tab4:
         fig_tr.update_layout(height=380, margin=dict(t=10))
         _chart(fig_tr, "ukri_theme_region_heatmap")
 
-    # Research topics word frequency
+    # Theme × region — funding size
+    st.markdown('<div class="section-header">Sustainability Theme × Region (Total Funding £M)</div>', unsafe_allow_html=True)
+    th_reg_fund_rows = []
+    for theme in SUSTAINABILITY_THEMES:
+        col_key = "theme_" + theme.lower().replace(" ", "_").replace("&", "and")
+        if col_key in df.columns:
+            sub = (
+                df[df[col_key]]
+                .groupby("region")["fund_value"]
+                .sum()
+                .reset_index(name="funding")
+            )
+            sub["theme"] = theme
+            th_reg_fund_rows.append(sub)
+    if th_reg_fund_rows:
+        trf_df = pd.concat(th_reg_fund_rows)
+        trf_df["funding_M"] = trf_df["funding"] / 1e6
+        trf_pivot = trf_df.pivot(index="theme", columns="region", values="funding_M").fillna(0)
+        fig_trf = px.imshow(
+            trf_pivot,
+            aspect="auto",
+            color_continuous_scale="YlOrRd",
+            labels=dict(color="£M"),
+            template="plotly_white",
+            text_auto=".0f",
+        )
+        fig_trf.update_layout(height=380, margin=dict(t=10))
+        _chart(fig_trf, "ukri_theme_region_funding_heatmap")
+
+    # Research topics — frequency coloured by interdisciplinarity
     st.markdown('<div class="section-header">Most Frequent Research Topics in Sustainability Projects</div>', unsafe_allow_html=True)
-    topics_text = " ".join(sus_df["research_topics"].fillna("").tolist())
-    topic_list = [t.strip() for t in topics_text.split(";") if t.strip() and t.strip() != "Unclassified"]
-    topic_counts = Counter(topic_list).most_common(25)
-    if topic_counts:
-        td_df = pd.DataFrame(topic_counts, columns=["topic", "count"]).sort_values("count")
+    st.caption(
+        "Bar length = how often the topic is declared. **Colour = interdisciplinarity "
+        "index** — the Shannon diversity of research subjects across the projects that "
+        "feature the topic (higher = the topic spans more disciplines, i.e. an "
+        "interdisciplinary connector; lower = concentrated in one field)."
+    )
+
+    PLACEHOLDER_TOPICS = {"unclassified", "see subject area"}
+
+    @st.cache_data(show_spinner=False)
+    def _topic_frequency_interdisc(data_key):
+        import math
+        topic_count = Counter()
+        topic_subj = {}
+        for topics_str, subjects_str in zip(
+            sus_df["research_topics"].fillna(""), sus_df["research_subjects"].fillna("")
+        ):
+            topics = [
+                t.strip() for t in topics_str.split(";")
+                if t.strip() and t.strip().lower() not in PLACEHOLDER_TOPICS
+            ]
+            subjects = [s.strip() for s in subjects_str.split(";") if s.strip()]
+            for t in topics:
+                topic_count[t] += 1
+                topic_subj.setdefault(t, Counter()).update(subjects)
+        rows = []
+        for topic, cnt in topic_count.items():
+            c = topic_subj[topic]
+            total = sum(c.values())
+            shannon = (
+                -sum((v / total) * math.log(v / total) for v in c.values())
+                if total else 0.0
+            )
+            rows.append({
+                "topic": topic,
+                "count": cnt,
+                "interdisc": round(shannon, 2),
+                "n_subjects": len(c),
+            })
+        return pd.DataFrame(rows)
+
+    topic_metrics = _topic_frequency_interdisc(
+        f"topicidx_{len(sus_df)}_{sus_df['fund_value'].sum():.0f}"
+    )
+    if not topic_metrics.empty:
+        td_df = topic_metrics.sort_values("count", ascending=False).head(25).sort_values("count")
         fig_topics = px.bar(
             td_df,
             y="topic",
             x="count",
             orientation="h",
-            color="count",
-            color_continuous_scale="Greens",
-            labels={"count": "Occurrences", "topic": ""},
+            color="interdisc",
+            color_continuous_scale="Viridis",
+            custom_data=["interdisc", "n_subjects"],
+            labels={"count": "Occurrences", "topic": "", "interdisc": "Interdisciplinarity"},
             template="plotly_white",
         )
-        fig_topics.update_layout(showlegend=False, height=500, margin=dict(t=10), coloraxis_showscale=False)
+        fig_topics.update_traces(
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "Occurrences: %{x}<br>"
+                "Interdisciplinarity index: %{customdata[0]:.2f}<br>"
+                "Distinct research subjects: %{customdata[1]}"
+                "<extra></extra>"
+            )
+        )
+        fig_topics.update_layout(
+            height=500,
+            margin=dict(t=10),
+            coloraxis_colorbar_title="Interdiscip.<br>(subj. diversity)",
+        )
         _chart(fig_topics, "ukri_research_topics_frequency")
     else:
         st.info("Research topic metadata not available in this filtered dataset.")
@@ -724,41 +1093,131 @@ with tab5:
         _chart(fig_collab_hist, "ukri_collaboration_size_distribution")
 
     with col_b:
-        st.markdown('<div class="section-header">Collaboration Size by Funding Council (Box Plot)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">Collaboration Size by Funding Council — Standard Projects</div>', unsafe_allow_html=True)
+        net_threshold = st.slider(
+            "Large-consortium threshold (partner organisations)",
+            min_value=10, max_value=60, value=20, step=5,
+            help="Projects with more partners than this are treated as large consortia / "
+                 "network projects and shown separately below, so they don't compress the "
+                 "box plot for typical projects.",
+        )
+        standard_collab = df[(df["collab_count"] > 0) & (df["collab_count"] <= net_threshold)]
         fig_collab_box = px.box(
-            df[df["collab_count"] > 0],
+            standard_collab,
             x="funder",
             y="collab_count",
             color="funder",
             color_discrete_map=COUNCIL_COLORS,
-            points=False,
+            points="outliers",
             labels={"collab_count": "Partner Organisations", "funder": "Council"},
             template="plotly_white",
         )
         fig_collab_box.update_layout(showlegend=False, height=360, margin=dict(t=10))
-        _chart(fig_collab_box, "ukri_collaboration_size_by_council")
+        _chart(fig_collab_box, "ukri_collaboration_size_by_council_standard")
+
+    # Large consortia / network projects — plotted separately
+    large_collab = df[df["collab_count"] > net_threshold]
+    st.markdown(
+        f'<div class="section-header">Large Consortia / Network Projects '
+        f'(&gt; {net_threshold} partners) by Council</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        f"{len(large_collab):,} projects exceed {net_threshold} partner organisations — "
+        "typically network grants, consortia and large programme awards. Each dot is one "
+        "project; these are the outliers removed from the box plot above."
+    )
+    if len(large_collab):
+        fig_large = px.box(
+            large_collab,
+            x="funder",
+            y="collab_count",
+            color="funder",
+            color_discrete_map=COUNCIL_COLORS,
+            points="all",
+            hover_name="title",
+            labels={"collab_count": "Partner Organisations", "funder": "Council"},
+            template="plotly_white",
+        )
+        fig_large.update_traces(marker=dict(size=5, opacity=0.6), jitter=0.3, pointpos=0)
+        fig_large.update_layout(showlegend=False, height=360, margin=dict(t=10))
+        _chart(fig_large, "ukri_collaboration_large_consortia")
+    else:
+        st.info(f"No projects exceed {net_threshold} partner organisations in the current selection.")
 
     # Average collaboration by region
-    st.markdown('<div class="section-header">Average Collaboration Size by Region & Sustainability Status</div>', unsafe_allow_html=True)
-    collab_reg = (
-        df.groupby(["region", "is_sustainability"])["collab_count"]
-        .mean()
-        .reset_index()
+    st.markdown('<div class="section-header">Collaboration Size by Funding Tier & Sustainability Status</div>', unsafe_allow_html=True)
+    st.caption(
+        "Grant funding spans more than three orders of magnitude and is approximately "
+        "log-normal, so projects are grouped into order-of-magnitude (log-spaced) tiers "
+        "rather than equal-width bins. Box = median and interquartile range per tier; "
+        "collaboration size grows steeply with grant size."
     )
-    collab_reg["type"] = collab_reg["is_sustainability"].map({True: "Sustainability", False: "Other"})
-    fig_collab_reg = px.bar(
-        collab_reg,
-        x="region",
+    FUND_TIER_EDGES = [100_000, 500_000, 1_000_000, 5_000_000, 10_000_000, np.inf]
+    FUND_TIER_LABELS = ["£100k–500k", "£500k–1M", "£1M–5M", "£5M–10M", ">£10M"]
+    collab_fund = df[df["fund_value"].notna() & (df["fund_value"] >= FUND_TIER_EDGES[0])].copy()
+    collab_fund["fund_tier"] = pd.cut(
+        collab_fund["fund_value"],
+        bins=FUND_TIER_EDGES,
+        labels=FUND_TIER_LABELS,
+        right=False,
+    )
+    collab_fund["type"] = collab_fund["is_sustainability"].map(
+        {True: "Sustainability", False: "Other UKRI"}
+    )
+    fig_collab_fund = px.box(
+        collab_fund,
+        x="fund_tier",
         y="collab_count",
         color="type",
-        barmode="group",
-        color_discrete_map={"Sustainability": "#2ca02c", "Other": "#aec7e8"},
-        labels={"collab_count": "Avg. Partner Organisations", "region": "Region", "type": ""},
+        points=False,
+        category_orders={"fund_tier": FUND_TIER_LABELS,
+                         "type": ["Sustainability", "Other UKRI"]},
+        color_discrete_map={"Sustainability": "#2ca02c", "Other UKRI": "#aec7e8"},
+        labels={"collab_count": "Partner Organisations", "fund_tier": "Grant Funding Tier", "type": ""},
         template="plotly_white",
     )
-    fig_collab_reg.update_xaxes(tickangle=30)
-    fig_collab_reg.update_layout(height=360, margin=dict(t=10, b=80), legend_title_text="")
-    _chart(fig_collab_reg, "ukri_collaboration_by_region")
+    fig_collab_fund.update_layout(
+        height=380, margin=dict(t=10), legend_title_text="", boxmode="group"
+    )
+    _chart(fig_collab_fund, "ukri_collaboration_by_funding_tier")
+
+    # Companion: mean collaboration size per tier (robust summary with sample sizes)
+    tier_summary = (
+        collab_fund.groupby("fund_tier", observed=True)["collab_count"]
+        .agg(mean_collab="mean", median_collab="median", projects="size")
+        .reset_index()
+    )
+    tier_summary["mean_collab"] = tier_summary["mean_collab"].round(1)
+    tier_summary["fund_tier"] = pd.Categorical(
+        tier_summary["fund_tier"], categories=FUND_TIER_LABELS, ordered=True
+    )
+    tier_summary = tier_summary.sort_values("fund_tier")
+    fig_tier_mean = px.bar(
+        tier_summary,
+        x="fund_tier",
+        y="mean_collab",
+        color="mean_collab",
+        color_continuous_scale="Tealgrn",
+        custom_data=["median_collab", "projects"],
+        labels={"mean_collab": "Mean Partner Organisations", "fund_tier": "Grant Funding Tier"},
+        template="plotly_white",
+        text="mean_collab",
+    )
+    fig_tier_mean.update_traces(
+        textposition="outside",
+        hovertemplate=(
+            "<b>%{x}</b><br>"
+            "Mean partners: %{y}<br>"
+            "Median partners: %{customdata[0]}<br>"
+            "Projects: %{customdata[1]}"
+            "<extra></extra>"
+        ),
+    )
+    fig_tier_mean.update_layout(
+        height=320, margin=dict(t=10), coloraxis_showscale=False
+    )
+    _chart(fig_tier_mean, "ukri_mean_collaboration_by_funding_tier")
 
     # Collaboration vs funding scatter
     st.markdown('<div class="section-header">Collaboration Size vs. Grant Value</div>', unsafe_allow_html=True)
@@ -873,12 +1332,16 @@ with tab5:
     G_collab, community_map = build_collab_network("collab_v4_full16k", top_n=22, min_edge_weight=3)
 
     @st.cache_data(show_spinner="Rendering network figure…")
-    def render_collab_matplotlib(_G, _community_map):
+    def render_collab_matplotlib(_G, _community_map, legend_unit="institutions",
+                                 abbreviate=True, label_fontsize=16, wrap_width=0,
+                                 min_sep=0.22, offset_base=0.30, iterations=80,
+                                 fig_w=14, fig_h=11):
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import matplotlib.patches as mpatches
         from matplotlib.lines import Line2D
+        import textwrap
         import io
 
         # ── Palette (colourblind-friendly, high contrast) ─────────────────────
@@ -895,13 +1358,23 @@ with tab5:
         }
 
         def short_name(raw):
-            low = raw.lower()
-            if low in ABBREV:
-                return ABBREV[low]
-            for prefix in ("the university of ", "university of ", "university college "):
-                if low.startswith(prefix):
-                    return raw[len(prefix):].title()
-            return raw.title().replace("University", "Univ.")
+            if abbreviate:
+                low = raw.lower()
+                if low in ABBREV:
+                    disp = ABBREV[low]
+                else:
+                    disp = None
+                    for prefix in ("the university of ", "university of ", "university college "):
+                        if low.startswith(prefix):
+                            disp = raw[len(prefix):].title()
+                            break
+                    if disp is None:
+                        disp = raw.title().replace("University", "Univ.")
+            else:
+                disp = raw  # subjects etc. are already concise, keep verbatim
+            if wrap_width and wrap_width > 0:
+                disp = "\n".join(textwrap.wrap(disp, wrap_width))
+            return disp
 
         degree_map = dict(_G.degree())
         max_deg = max(degree_map.values(), default=1)
@@ -937,15 +1410,15 @@ with tab5:
         # Post-process: push overlapping nodes apart
         pa = {n: list(p) for n, p in pos.items()}
         nl = list(pa)
-        for _ in range(80):
+        for _ in range(iterations):
             for i in range(len(nl)):
                 for j in range(i + 1, len(nl)):
                     a, b = nl[i], nl[j]
                     dx = pa[b][0] - pa[a][0]
                     dy = pa[b][1] - pa[a][1]
                     d = max((dx ** 2 + dy ** 2) ** 0.5, 1e-6)
-                    if d < 0.22:
-                        push = (0.22 - d) / 2
+                    if d < min_sep:
+                        push = (min_sep - d) / 2
                         ux, uy = dx / d, dy / d
                         pa[a][0] -= push * ux; pa[a][1] -= push * uy
                         pa[b][0] += push * ux; pa[b][1] += push * uy
@@ -954,7 +1427,7 @@ with tab5:
         max_w = max((d["weight"] for _, _, d in _G.edges(data=True)), default=1)
 
         # ── Figure ────────────────────────────────────────────────────────────
-        fig, ax = plt.subplots(figsize=(14, 11))
+        fig, ax = plt.subplots(figsize=(fig_w, fig_h))
         fig.patch.set_facecolor("#ffffff")
         ax.set_facecolor("#f7f9f8")
         ax.set_aspect("equal")
@@ -1003,7 +1476,7 @@ with tab5:
             cx_c, cy_c = comm_centers[cid]
             dx, dy = x - cx_c, y - cy_c
             d = max((dx ** 2 + dy ** 2) ** 0.5, 1e-4)
-            offset = 0.30 + 0.10 * (deg / max_deg)
+            offset = offset_base + 0.10 * (deg / max_deg)
             lx = x + offset * dx / d
             ly = y + offset * dy / d
 
@@ -1011,7 +1484,7 @@ with tab5:
             bold = deg >= top5_threshold
             ax.text(
                 lx, ly, label,
-                fontsize=16, fontweight="bold" if bold else "normal",
+                fontsize=label_fontsize, fontweight="bold" if bold else "normal",
                 ha="center", va="center", zorder=5,
                 bbox=dict(
                     boxstyle="round,pad=0.28",
@@ -1034,7 +1507,7 @@ with tab5:
             legend_elems.append(
                 mpatches.Patch(facecolor=color, alpha=0.85, edgecolor="white",
                                linewidth=1.5,
-                               label=f"Community {cid + 1}  ({n_m} institutions)")
+                               label=f"Community {cid + 1}  ({n_m} {legend_unit})")
             )
 
         # Node size reference
@@ -1101,6 +1574,90 @@ with tab5:
     legend_cols = st.columns(min(len(comm_members), 5))
     for cid, members in sorted(comm_members.items()):
         with legend_cols[cid % len(legend_cols)]:
+            color = COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)]
+            preview = ", ".join(sorted(members)[:3]) + ("…" if len(members) > 3 else "")
+            st.markdown(
+                f'<span style="background:{color};padding:2px 8px;border-radius:3px;'
+                f'color:#fff;font-size:0.78rem"><b>Community {cid + 1}</b></span> '
+                f'<span style="font-size:0.8rem">{preview}</span>',
+                unsafe_allow_html=True,
+            )
+
+    # ── Graph 1b: Research Subject Co-occurrence Network (static, paper-quality) ─
+    st.markdown('<div class="section-header">Research Subject Co-occurrence Network (Top Hubs)</div>', unsafe_allow_html=True)
+    st.caption(
+        "Companion to the institution network, built the same way but over research "
+        "subjects. Nodes = research subjects; an edge links two subjects declared together "
+        "on the same project. Node size ∝ number of distinct subjects it co-occurs with "
+        "(disciplinary breadth). Colour = subject community (greedy modularity); edge "
+        "thickness ∝ projects sharing both subjects. Coloured edges are intra-community, "
+        "grey edges inter-community. Use the download buttons below for a publication-quality "
+        "PNG or SVG."
+    )
+
+    @st.cache_data(show_spinner="Building subject co-occurrence network…")
+    def build_subject_network(data_key, top_n=22, min_edge_weight=12):
+        from data_processor import get_or_build_dataset as _load
+        _df = _load()
+        placeholders = {"unclassified", "see subject area", ""}
+
+        G_full = nx.Graph()
+        for s in _df["research_subjects"].fillna(""):
+            subs = [x.strip() for x in str(s).split(";")
+                    if x.strip().lower() not in placeholders]
+            subs = list(dict.fromkeys(subs))  # unique within a project
+            for i in range(len(subs)):
+                for j in range(i + 1, len(subs)):
+                    u, v = subs[i], subs[j]
+                    if G_full.has_edge(u, v):
+                        G_full[u][v]["weight"] += 1
+                    else:
+                        G_full.add_edge(u, v, weight=1)
+
+        degree_map = dict(G_full.degree())
+        top_nodes = sorted(degree_map, key=lambda x: -degree_map[x])[:top_n]
+        sub = G_full.subgraph(top_nodes).copy()
+
+        edges_to_remove = [(u, v) for u, v, d in sub.edges(data=True) if d["weight"] < min_edge_weight]
+        sub.remove_edges_from(edges_to_remove)
+        sub.remove_nodes_from(list(nx.isolates(sub)))
+
+        communities = list(nx.algorithms.community.greedy_modularity_communities(sub))
+        community_map = {}
+        for i, comm in enumerate(communities):
+            for node in comm:
+                community_map[node] = i
+        return sub, community_map
+
+    G_subject, subject_comm_map = build_subject_network("subject_v1_full16k", top_n=22, min_edge_weight=12)
+    subj_png, subj_svg = render_collab_matplotlib(
+        G_subject, subject_comm_map, legend_unit="subjects", abbreviate=False,
+        label_fontsize=13, wrap_width=16, min_sep=0.32, offset_base=0.40,
+        iterations=120, fig_w=16, fig_h=12.5,
+    )
+    st.image(subj_png, use_container_width=True)
+
+    sdl1, sdl2 = st.columns(2)
+    with sdl1:
+        st.download_button(
+            "📥 Download PNG (300 DPI)", data=subj_png,
+            file_name="ukri_subject_cooccurrence_network.png",
+            mime="image/png", key="subj_png_dl",
+        )
+    with sdl2:
+        st.download_button(
+            "📥 Download SVG (vector)", data=subj_svg,
+            file_name="ukri_subject_cooccurrence_network.svg",
+            mime="image/svg+xml", key="subj_svg_dl",
+        )
+
+    # Subject community membership summary
+    subj_members: dict[int, list[str]] = {}
+    for node, cid in subject_comm_map.items():
+        subj_members.setdefault(cid, []).append(node)
+    subj_cols = st.columns(min(len(subj_members), 5))
+    for cid, members in sorted(subj_members.items()):
+        with subj_cols[cid % len(subj_cols)]:
             color = COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)]
             preview = ", ".join(sorted(members)[:3]) + ("…" if len(members) > 3 else "")
             st.markdown(
@@ -1198,7 +1755,10 @@ with tab5:
                 "If this is the first run, the index is built lazily and may take ~30s.")
     else:
         @st.cache_data(show_spinner="Rendering bipartite figure…")
-        def render_org_project_bipartite(_G, _top_orgs, sig: str):
+        def render_org_project_bipartite(_G, _top_orgs, sig: str,
+                                         left_title="Organisations",
+                                         right_title="Sustainability Projects",
+                                         left_color="#0b3d91"):
             import matplotlib
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
@@ -1255,7 +1815,7 @@ with tab5:
                 x, y = pos[n]
                 deg = _G.degree(n)
                 size = 240 + 700 * (deg / max_org_deg)
-                ax.scatter([x], [y], s=size, c="#0b3d91", edgecolors="white", linewidths=2.2, zorder=3)
+                ax.scatter([x], [y], s=size, c=left_color, edgecolors="white", linewidths=2.2, zorder=3)
                 label = _G.nodes[n]["label"].title()
                 if len(label) > 38:
                     label = label[:36] + "…"
@@ -1274,9 +1834,9 @@ with tab5:
                 ax.text(x + 0.06, y, short, ha="left", va="center", fontsize=9, zorder=5)
 
             # Column headers
-            ax.text(-1.0, 1.07, "Organisations", ha="center", va="bottom",
-                    fontsize=15, fontweight="bold", color="#0b3d91")
-            ax.text(1.0, 1.07, "Sustainability Projects", ha="center", va="bottom",
+            ax.text(-1.0, 1.07, left_title, ha="center", va="bottom",
+                    fontsize=15, fontweight="bold", color=left_color)
+            ax.text(1.0, 1.07, right_title, ha="center", va="bottom",
                     fontsize=15, fontweight="bold", color="#333")
 
             legend_elems = [
@@ -1327,6 +1887,83 @@ with tab5:
             f"Showing {n_orgs} organisations and {n_projs} projects "
             f"({G_bp.number_of_edges()} participation edges). "
             f"Data source: per-project JSON files in `ukri/` — `organisationRoles` field."
+        )
+
+    # ── Graph 1c-bis: Theme–Project Bipartite Network (interdisciplinarity) ───
+    st.markdown('<div class="section-header">Theme–Project Network (Interdisciplinary Sustainability Projects)</div>', unsafe_allow_html=True)
+    st.caption(
+        "Companion to the organisation–project network, but with sustainability **themes** "
+        "on the left instead of organisations. Right column = projects classified under ≥2 "
+        "themes (i.e. interdisciplinary). Edges link a project to every theme it addresses; "
+        "a project fanning out to many themes is highly interdisciplinary, and each theme's "
+        "node size ∝ the number of these cross-cutting projects it shares. "
+        "Project colour = funding council."
+    )
+
+    tp_top_projects = st.slider("Top interdisciplinary projects", 15, 60, 30, key="tp_top_projects")
+
+    @st.cache_data(show_spinner="Building theme–project bipartite network…")
+    def build_theme_project_bipartite(top_projects_n: int):
+        from data_processor import get_or_build_dataset as _load
+        df_full = _load().assign(project_ref=lambda d: d["project_ref"].astype(str))
+        inter = df_full[df_full["is_sustainability"] & (df_full["theme_count"] >= 2)].copy()
+        if inter.empty:
+            return None, [], {}
+        inter = inter.sort_values(["theme_count", "fund_value"], ascending=[False, False])
+        top = inter.head(top_projects_n)
+
+        G = nx.Graph()
+        themes_present = set()
+        for _, row in top.iterrows():
+            ref = row["project_ref"]
+            themes = [t.strip() for t in str(row["sustainability_themes"]).split(";") if t.strip()]
+            if len(themes) < 2:
+                continue
+            title = str(row["title"]) if pd.notna(row["title"]) else ref
+            funder = str(row["funder"]) if pd.notna(row["funder"]) else "Unknown"
+            fv = float(row["fund_value"]) if pd.notna(row["fund_value"]) else 0.0
+            G.add_node(("proj", ref), kind="proj", label=title, funder=funder, fund_value=fv, ref=ref)
+            for th in themes:
+                if ("org", th) not in G:
+                    G.add_node(("org", th), kind="org", label=th)
+                G.add_edge(("org", th), ("proj", ref))
+                themes_present.add(th)
+        return G, sorted(themes_present), {}
+
+    G_tp, theme_nodes_kept, _tp_meta = build_theme_project_bipartite(tp_top_projects)
+
+    if G_tp is None or len(G_tp) == 0:
+        st.info("No multi-theme sustainability projects found in the current data.")
+    else:
+        tp_sig = f"themes|projs={tp_top_projects}|n={G_tp.number_of_nodes()}|e={G_tp.number_of_edges()}"
+        tp_png, tp_svg = render_org_project_bipartite(
+            G_tp, theme_nodes_kept, tp_sig,
+            left_title="Sustainability Themes",
+            right_title="Interdisciplinary Projects",
+            left_color="#1a5438",
+        )
+        st.image(tp_png, use_container_width=True)
+
+        tpdl1, tpdl2 = st.columns(2)
+        with tpdl1:
+            st.download_button(
+                "📥 Download PNG (220 DPI)", data=tp_png,
+                file_name="ukri_theme_project_bipartite.png",
+                mime="image/png", key="tp_png_dl",
+            )
+        with tpdl2:
+            st.download_button(
+                "📥 Download SVG (vector)", data=tp_svg,
+                file_name="ukri_theme_project_bipartite.svg",
+                mime="image/svg+xml", key="tp_svg_dl",
+            )
+
+        n_th = sum(1 for n in G_tp.nodes if G_tp.nodes[n].get("kind") == "org")
+        n_pr = sum(1 for n in G_tp.nodes if G_tp.nodes[n].get("kind") == "proj")
+        st.caption(
+            f"Showing {n_th} themes and {n_pr} interdisciplinary projects "
+            f"({G_tp.number_of_edges()} theme–project edges). Every project shown spans ≥2 "
+            "themes; those fanning out to the most themes are the most interdisciplinary."
         )
 
     # ── Graph 1d: Research Topic Co-occurrence Network (from JSON files) ──────
@@ -1883,20 +2520,21 @@ with tab5:
     # ── Graph 2: Sustainability Theme Co-occurrence Network ───────────────────
     st.markdown('<div class="section-header">Sustainability Theme Co-occurrence Network</div>', unsafe_allow_html=True)
     st.caption(
-        "How the eight sustainability themes co-occur within projects. "
-        "Node size ∝ projects classified under the theme; edge width ∝ shared "
-        "projects; communities (colours, halos) are detected by greedy "
-        "modularity on the weighted graph. The three strongest links are "
-        "labelled with the count of shared projects."
+        "How the eight sustainability themes co-occur within projects. The **chord network** "
+        "follows the **Weight by** toggle (project counts or total funding £): node size ∝ "
+        "projects/funding under the theme, edge width ∝ shared projects or jointly-funded £. "
+        "The **co-occurrence matrix** is shown both ways — by project count and by funding "
+        "size (£M) — so you can compare them directly. Communities (colours, halos) are "
+        "detected by greedy modularity on the weighted graph."
     )
 
     @st.cache_data(show_spinner="Building theme network…")
-    def build_theme_network(_df_themes_col, _df_sus_themes_col):
+    def build_theme_network(_df_themes_col, _df_sus_themes_col, _fund_series):
         theme_list = list(SUSTAINABILITY_THEMES.keys())
         G_t = nx.Graph()
         for theme in theme_list:
             G_t.add_node(theme)
-        for themes_str in _df_sus_themes_col:
+        for themes_str, fund in zip(_df_sus_themes_col, _fund_series.fillna(0)):
             themes = [t.strip() for t in str(themes_str).split(";") if t.strip()]
             for i in range(len(themes)):
                 for j in range(i + 1, len(themes)):
@@ -1904,22 +2542,29 @@ with tab5:
                     if u in G_t and v in G_t:
                         if G_t.has_edge(u, v):
                             G_t[u][v]["weight"] += 1
+                            G_t[u][v]["funding"] += float(fund)
                         else:
-                            G_t.add_edge(u, v, weight=1)
+                            G_t.add_edge(u, v, weight=1, funding=float(fund))
         for theme, col_key in zip(
             theme_list,
             [f"theme_{t.lower().replace(' ','_').replace('&','and')}" for t in theme_list],
         ):
-            G_t.nodes[theme]["count"] = int(_df_themes_col.get(col_key, pd.Series([False])).sum())
+            mask = _df_themes_col.get(col_key)
+            if mask is not None:
+                G_t.nodes[theme]["count"] = int(mask.sum())
+                G_t.nodes[theme]["funding"] = float(_fund_series[mask].sum())
+            else:
+                G_t.nodes[theme]["count"] = 0
+                G_t.nodes[theme]["funding"] = 0.0
         return G_t
 
     theme_col_series = {
         col: df_all[col] for col in df_all.columns if col.startswith("theme_") and col != "theme_count"
     }
-    G_theme = build_theme_network(theme_col_series, df_all["sustainability_themes"])
+    G_theme = build_theme_network(theme_col_series, df_all["sustainability_themes"], df_all["fund_value"])
 
     @st.cache_data(show_spinner="Rendering theme network…")
-    def render_theme_network(_G):
+    def render_theme_network(_G, metric="projects"):
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
@@ -1927,6 +2572,21 @@ with tab5:
         from matplotlib.patches import FancyArrowPatch
         import io
         import math
+
+        use_funding = metric == "funding"
+        edge_key = "funding" if use_funding else "weight"
+
+        def edge_val(d):
+            return d.get(edge_key, 0)
+
+        def fmt_edge(v):
+            return f"£{v/1e6:.0f}M" if use_funding else f"{int(v)}"
+
+        def node_val(n):
+            return _G.nodes[n].get("funding" if use_funding else "count", 0)
+
+        def fmt_node(v):
+            return f"£{v/1e6:.0f}M" if use_funding else f"{int(v)} projects"
 
         PALETTE = [
             "#1b7837", "#5aae61", "#762a83", "#9970ab",
@@ -1955,9 +2615,9 @@ with tab5:
             theta = math.pi / 2 - 2 * math.pi * i / n_nodes  # start at top, go clockwise
             pos[n] = (R * math.cos(theta), R * math.sin(theta))
 
-        max_w = max((d["weight"] for _, _, d in _G.edges(data=True)), default=1)
-        counts = {n: _G.nodes[n].get("count", 1) for n in _G.nodes}
-        max_c = max(counts.values(), default=1)
+        max_w = max((edge_val(d) for _, _, d in _G.edges(data=True)), default=1) or 1
+        counts = {n: node_val(n) for n in _G.nodes}
+        max_c = max(counts.values(), default=1) or 1
 
         fig, ax = plt.subplots(figsize=(14, 11))
         fig.patch.set_facecolor("#ffffff")
@@ -1967,9 +2627,9 @@ with tab5:
 
         # Curved bezier edges — chord-diagram aesthetic. Curvature is
         # consistent so parallel chords don't visually pile.
-        edges_sorted = sorted(_G.edges(data=True), key=lambda e: e[2]["weight"])
+        edges_sorted = sorted(_G.edges(data=True), key=lambda e: edge_val(e[2]))
         for u, v, d in edges_sorted:
-            w = d["weight"]
+            w = edge_val(d)
             cu = cmap.get(u, 0); cv = cmap.get(v, 0)
             if cu == cv:
                 color = PALETTE[cu % len(PALETTE)]
@@ -1989,8 +2649,9 @@ with tab5:
 
         # Edge weight labels — show all edges, but smaller text for weak ones.
         # Bezier midpoint approximation for curved edges.
+        median_edge = sorted([edge_val(e[2]) for e in edges_sorted])[len(edges_sorted) // 2]
         for u, v, d in edges_sorted:
-            w = d["weight"]
+            w = edge_val(d)
             x0, y0 = pos[u]; x1, y1 = pos[v]
             mx, my = (x0 + x1) / 2, (y0 + y1) / 2
             # Perpendicular offset matching the bezier curvature (rad=0.18)
@@ -2000,8 +2661,8 @@ with tab5:
             curve_offset = 0.18 * length * 0.5
             lx, ly = mx + nx_ * curve_offset, my + ny_ * curve_offset
             # Bigger font + opaque bg for the top half of edges
-            is_strong = w >= sorted([e[2]["weight"] for e in edges_sorted])[len(edges_sorted) // 2]
-            ax.text(lx, ly, f"{w}",
+            is_strong = w >= median_edge
+            ax.text(lx, ly, fmt_edge(w),
                     fontsize=10 if is_strong else 8,
                     fontweight="bold" if is_strong else "normal",
                     ha="center", va="center",
@@ -2039,7 +2700,7 @@ with tab5:
             if abs(math.cos(theta)) < 0.15:
                 rot = 0
                 ha = "center"
-            label = f"{n}\n({counts[n]} projects)"
+            label = f"{n}\n({fmt_node(counts[n])})"
             ax.text(lx, ly, label, fontsize=11, ha=ha, va="center",
                     fontweight="bold", color="#1a3d2b",
                     rotation=rot, rotation_mode="anchor", zorder=5,
@@ -2072,22 +2733,30 @@ with tab5:
         return buf_png.getvalue(), buf_svg.getvalue()
 
     @st.cache_data(show_spinner="Rendering theme co-occurrence matrix…")
-    def render_theme_matrix(_G):
+    def render_theme_matrix(_G, metric="projects"):
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import numpy as np
         import io
 
-        nodes = sorted(_G.nodes(), key=lambda n: -_G.nodes[n].get("count", 0))
+        use_funding = metric == "funding"
+        node_key = "funding" if use_funding else "count"
+        edge_key = "funding" if use_funding else "weight"
+        scale = 1e6 if use_funding else 1
+
+        def fmt(v):
+            return f"{v/1e6:.0f}" if use_funding else f"{int(v)}"
+
+        nodes = sorted(_G.nodes(), key=lambda n: -_G.nodes[n].get(node_key, 0))
         N = len(nodes)
-        M = np.zeros((N, N), dtype=int)
+        M = np.zeros((N, N), dtype=float)
         for i, u in enumerate(nodes):
             for j, v in enumerate(nodes):
                 if i == j:
-                    M[i, j] = _G.nodes[u].get("count", 0)
+                    M[i, j] = _G.nodes[u].get(node_key, 0)
                 elif _G.has_edge(u, v):
-                    M[i, j] = _G[u][v]["weight"]
+                    M[i, j] = _G[u][v].get(edge_key, 0)
 
         fig, ax = plt.subplots(figsize=(10, 8.5))
         fig.patch.set_facecolor("#ffffff")
@@ -2105,7 +2774,7 @@ with tab5:
                 if val == 0:
                     continue
                 color = "white" if val / vmax > 0.55 else "#1a3d2b"
-                ax.text(j, i, str(val), ha="center", va="center",
+                ax.text(j, i, fmt(val), ha="center", va="center",
                         fontsize=10, fontweight="bold" if i == j else "normal",
                         color=color, zorder=5)
         ax.set_xticks(range(N))
@@ -2114,10 +2783,11 @@ with tab5:
         ax.set_yticklabels(nodes, fontsize=10)
         ax.set_xlabel("")
         ax.set_ylabel("")
-        ax.set_title("Theme co-occurrence matrix  ·  diagonal = total projects per theme",
+        diag_label = "total funding £M per theme" if use_funding else "total projects per theme"
+        ax.set_title(f"Theme co-occurrence matrix  ·  diagonal = {diag_label}",
                      fontsize=12, color="#333", pad=12)
         cbar = fig.colorbar(im, ax=ax, fraction=0.04, pad=0.02)
-        cbar.set_label("Shared projects", fontsize=10)
+        cbar.set_label("Shared funding (£M)" if use_funding else "Shared projects", fontsize=10)
         plt.tight_layout(pad=0.4)
         buf_png = io.BytesIO()
         fig.savefig(buf_png, format="png", dpi=220, bbox_inches="tight", facecolor="white")
@@ -2131,14 +2801,23 @@ with tab5:
     if G_theme.number_of_edges() == 0:
         st.info("No theme co-occurrences in the current filter — projects classified under a single theme only.")
     else:
-        theme_view = st.radio(
-            "View",
-            ["Chord network", "Co-occurrence matrix", "Both"],
-            index=2, horizontal=True, key="theme_view",
-        )
+        tv_col, tm_col = st.columns(2)
+        with tv_col:
+            theme_view = st.radio(
+                "View",
+                ["Chord network", "Co-occurrence matrix", "Both"],
+                index=2, horizontal=True, key="theme_view",
+            )
+        with tm_col:
+            theme_metric_label = st.radio(
+                "Weight by",
+                ["Projects", "Funding (£)"],
+                index=0, horizontal=True, key="theme_metric",
+            )
+        theme_metric = "funding" if theme_metric_label.startswith("Funding") else "projects"
 
         if theme_view in ("Chord network", "Both"):
-            theme_png, theme_svg = render_theme_network(G_theme)
+            theme_png, theme_svg = render_theme_network(G_theme, theme_metric)
             st.image(theme_png, use_container_width=True)
             thd1, thd2 = st.columns(2)
             with thd1:
@@ -2149,26 +2828,57 @@ with tab5:
                                    file_name="ukri_theme_cooccurrence_network.svg", mime="image/svg+xml")
 
         if theme_view in ("Co-occurrence matrix", "Both"):
-            mat_png, mat_svg = render_theme_matrix(G_theme)
+            # Project-count matrix
+            st.markdown('<div style="font-weight:600;color:#2e7d5e;margin-top:0.3rem">By project count</div>', unsafe_allow_html=True)
+            mat_png, mat_svg = render_theme_matrix(G_theme, "projects")
             st.image(mat_png, use_container_width=True)
             mthd1, mthd2 = st.columns(2)
             with mthd1:
                 st.download_button("📥 Download matrix PNG", data=mat_png,
-                                   file_name="ukri_theme_cooccurrence_matrix.png", mime="image/png")
+                                   file_name="ukri_theme_cooccurrence_matrix.png", mime="image/png",
+                                   key="theme_mat_png")
             with mthd2:
                 st.download_button("📥 Download matrix SVG", data=mat_svg,
-                                   file_name="ukri_theme_cooccurrence_matrix.svg", mime="image/svg+xml")
+                                   file_name="ukri_theme_cooccurrence_matrix.svg", mime="image/svg+xml",
+                                   key="theme_mat_svg")
 
-        edge_rows = [
-            {"Theme A": u, "Theme B": v, "Shared projects": d["weight"]}
-            for u, v, d in sorted(G_theme.edges(data=True), key=lambda e: -e[2]["weight"])[:8]
-        ]
-        if edge_rows:
-            st.markdown(
-                '<div style="font-size:0.85rem;color:#666;margin-top:0.4rem">Top theme pairings</div>',
-                unsafe_allow_html=True,
-            )
-            st.dataframe(pd.DataFrame(edge_rows), use_container_width=True, hide_index=True)
+            # Funding matrix (companion)
+            st.markdown('<div style="font-weight:600;color:#2e7d5e;margin-top:0.6rem">By funding size (£M)</div>', unsafe_allow_html=True)
+            matf_png, matf_svg = render_theme_matrix(G_theme, "funding")
+            st.image(matf_png, use_container_width=True)
+            mfhd1, mfhd2 = st.columns(2)
+            with mfhd1:
+                st.download_button("📥 Download funding matrix PNG", data=matf_png,
+                                   file_name="ukri_theme_cooccurrence_matrix_funding.png", mime="image/png",
+                                   key="theme_matf_png")
+            with mfhd2:
+                st.download_button("📥 Download funding matrix SVG", data=matf_svg,
+                                   file_name="ukri_theme_cooccurrence_matrix_funding.svg", mime="image/svg+xml",
+                                   key="theme_matf_svg")
+
+        pair_col1, pair_col2 = st.columns(2)
+        with pair_col1:
+            edge_rows = [
+                {"Theme A": u, "Theme B": v, "Shared projects": d["weight"]}
+                for u, v, d in sorted(G_theme.edges(data=True), key=lambda e: -e[2]["weight"])[:8]
+            ]
+            if edge_rows:
+                st.markdown(
+                    '<div style="font-size:0.85rem;color:#666;margin-top:0.4rem">Top theme pairings — by shared projects</div>',
+                    unsafe_allow_html=True,
+                )
+                st.dataframe(pd.DataFrame(edge_rows), use_container_width=True, hide_index=True)
+        with pair_col2:
+            edge_rows_fund = [
+                {"Theme A": u, "Theme B": v, "Shared funding (£M)": round(d.get("funding", 0) / 1e6, 1)}
+                for u, v, d in sorted(G_theme.edges(data=True), key=lambda e: -e[2].get("funding", 0))[:8]
+            ]
+            if edge_rows_fund:
+                st.markdown(
+                    '<div style="font-size:0.85rem;color:#666;margin-top:0.4rem">Top theme pairings — by shared funding</div>',
+                    unsafe_allow_html=True,
+                )
+                st.dataframe(pd.DataFrame(edge_rows_fund), use_container_width=True, hide_index=True)
 
     # ── Graph 3: Funder–Institution Bipartite Network ─────────────────────────
     st.markdown('<div class="section-header">Funder–Institution Bipartite Network</div>', unsafe_allow_html=True)
@@ -2330,6 +3040,79 @@ with tab5:
             mime="image/svg+xml",
         )
 
+    # ── Graph 3b: Funder Group × Sustainability Theme funding map ──────────────
+    st.markdown('<div class="section-header">Funder Group × Sustainability Theme (Funding £M)</div>', unsafe_allow_html=True)
+    st.caption(
+        "Funders categorised into families — UKRI Research Councils (AHRC, BBSRC, EPSRC, "
+        "ESRC, MRC, NERC, STFC); Innovate UK (incl. ATI, APC); UKRI strategic & "
+        "infrastructure funds (ISCF, SPF, UKRI FLF, Infrastructure Fund, COVID …); EU & "
+        "international/ODA funds (Horizon Europe Guarantee, GCRF, Newton, ISPF, Ayrton …); "
+        "and UK government departments (DBT, DEFRA). Cells show total funding (£M) each "
+        "group commits to each sustainability theme — which funder families drive which themes."
+    )
+
+    FUNDER_GROUP_MAP = {
+        "AHRC": "UKRI Research Councils", "BBSRC": "UKRI Research Councils",
+        "EPSRC": "UKRI Research Councils", "ESRC": "UKRI Research Councils",
+        "MRC": "UKRI Research Councils", "NERC": "UKRI Research Councils",
+        "STFC": "UKRI Research Councils",
+        "Innovate UK": "Innovate UK", "ATI": "Innovate UK", "APC": "Innovate UK",
+        "Other NPIF": "Innovate UK",
+        "ISCF": "UKRI Strategic & Infrastructure", "SPF": "UKRI Strategic & Infrastructure",
+        "UKRI": "UKRI Strategic & Infrastructure", "UKRI FLF": "UKRI Strategic & Infrastructure",
+        "Infrastructure Fund": "UKRI Strategic & Infrastructure",
+        "UKRI CRCRM": "UKRI Strategic & Infrastructure",
+        "UKRI Inn.Scholar": "UKRI Strategic & Infrastructure",
+        "DRI": "UKRI Strategic & Infrastructure", "TMF": "UKRI Strategic & Infrastructure",
+        "COVID": "UKRI Strategic & Infrastructure", "NC3Rs": "UKRI Strategic & Infrastructure",
+        "Horizon Europe Guarantee": "EU & International", "EU": "EU & International",
+        "GCRF": "EU & International", "Newton Fund": "EU & International",
+        "ISPF": "EU & International", "Ayrton Fund": "EU & International",
+        "FIC": "EU & International", "UUI": "EU & International", "SiPF": "EU & International",
+        "DBT": "UK Government Depts", "DEFRA": "UK Government Depts",
+    }
+    GROUP_ORDER = [
+        "UKRI Research Councils", "Innovate UK", "UKRI Strategic & Infrastructure",
+        "EU & International", "UK Government Depts", "Other",
+    ]
+
+    fg_df = df.copy()
+    fg_df["funder_group"] = fg_df["funder"].map(FUNDER_GROUP_MAP).fillna("Other")
+    fg_rows = []
+    for theme in SUSTAINABILITY_THEMES:
+        col_key = "theme_" + theme.lower().replace(" ", "_").replace("&", "and")
+        if col_key not in fg_df.columns:
+            continue
+        sub = fg_df[fg_df[col_key]].groupby("funder_group")["fund_value"].sum() / 1e6
+        for grp, val in sub.items():
+            fg_rows.append({"group": grp, "theme": theme, "funding_M": val})
+
+    if fg_rows:
+        fg_long = pd.DataFrame(fg_rows)
+        fg_pivot = fg_long.pivot(index="group", columns="theme", values="funding_M").fillna(0)
+        fg_pivot = fg_pivot.reindex([g for g in GROUP_ORDER if g in fg_pivot.index])
+
+        fig_fg = px.imshow(
+            fg_pivot, aspect="auto", color_continuous_scale="YlOrRd",
+            labels=dict(color="£M"), template="plotly_white", text_auto=".0f",
+        )
+        fig_fg.update_layout(height=320, margin=dict(t=10))
+        _chart(fig_fg, "ukri_funder_group_theme_funding")
+
+        # Row-normalised: each group's thematic emphasis (% of its theme-attributed funding)
+        st.markdown(
+            '<div style="font-weight:600;color:#2e7d5e;margin-top:0.4rem">'
+            "Thematic emphasis — share of each group's funding (%)</div>",
+            unsafe_allow_html=True,
+        )
+        fg_pct = fg_pivot.div(fg_pivot.sum(axis=1).replace(0, 1), axis=0) * 100
+        fig_fg_pct = px.imshow(
+            fg_pct, aspect="auto", color_continuous_scale="Greens",
+            labels=dict(color="%"), template="plotly_white", text_auto=".0f",
+        )
+        fig_fg_pct.update_layout(height=320, margin=dict(t=10))
+        _chart(fig_fg_pct, "ukri_funder_group_theme_share")
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 6 – RESEARCH IMPACT
@@ -2356,7 +3139,7 @@ with tab6:
             x="pubs_per_project",
             orientation="h",
             color="total_pubs",
-            color_continuous_scale="Blues",
+            color_continuous_scale="Tealgrn",
             labels={"pubs_per_project": "Publications per Project", "funder": "", "total_pubs": "Total Pubs"},
             template="plotly_white",
         )

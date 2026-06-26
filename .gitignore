@@ -18,6 +18,9 @@ streamlit_out.txt
 streamlit_err.txt
 streamlit.log
 
+# pyvis auto-generated static assets (vis.js / tom-select)
+lib/
+
 # Temp scripts and screenshots
 take_screenshot.py
 preview_bipartite.py
