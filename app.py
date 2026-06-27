@@ -1335,7 +1335,7 @@ with tab5:
     def render_collab_matplotlib(_G, _community_map, legend_unit="institutions",
                                  abbreviate=True, label_fontsize=16, wrap_width=0,
                                  min_sep=0.22, offset_base=0.30, iterations=80,
-                                 fig_w=14, fig_h=11):
+                                 fig_w=14, fig_h=11, cache_key=""):
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
@@ -1597,22 +1597,29 @@ with tab5:
 
     @st.cache_data(show_spinner="Building subject co-occurrence network…")
     def build_subject_network(data_key, top_n=22, min_edge_weight=12):
+        import itertools
+        from collections import Counter
         from data_processor import get_or_build_dataset as _load
         _df = _load()
-        placeholders = {"unclassified", "see subject area", ""}
+        placeholders = {"unclassified", "see subject area", "see research areas",
+                        "not yet classified", "other", ""}
 
+        freq = Counter()
+        n_projects = 0
         G_full = nx.Graph()
         for s in _df["research_subjects"].fillna(""):
             subs = [x.strip() for x in str(s).split(";")
                     if x.strip().lower() not in placeholders]
             subs = list(dict.fromkeys(subs))  # unique within a project
-            for i in range(len(subs)):
-                for j in range(i + 1, len(subs)):
-                    u, v = subs[i], subs[j]
-                    if G_full.has_edge(u, v):
-                        G_full[u][v]["weight"] += 1
-                    else:
-                        G_full.add_edge(u, v, weight=1)
+            if subs:
+                n_projects += 1
+            for x in subs:
+                freq[x] += 1
+            for u, v in itertools.combinations(subs, 2):
+                if G_full.has_edge(u, v):
+                    G_full[u][v]["weight"] += 1
+                else:
+                    G_full.add_edge(u, v, weight=1)
 
         degree_map = dict(G_full.degree())
         top_nodes = sorted(degree_map, key=lambda x: -degree_map[x])[:top_n]
@@ -1622,34 +1629,120 @@ with tab5:
         sub.remove_edges_from(edges_to_remove)
         sub.remove_nodes_from(list(nx.isolates(sub)))
 
+        # Chance-corrected tie strengths on the displayed edges
+        for u, v, d in sub.edges(data=True):
+            w = d["weight"]
+            d["assoc"] = w * n_projects / (freq[u] * freq[v]) if freq[u] and freq[v] else 0.0
+            d["jaccard"] = w / (freq[u] + freq[v] - w) if (freq[u] + freq[v] - w) else 0.0
+
         communities = list(nx.algorithms.community.greedy_modularity_communities(sub))
         community_map = {}
         for i, comm in enumerate(communities):
             for node in comm:
                 community_map[node] = i
-        return sub, community_map
 
-    G_subject, subject_comm_map = build_subject_network("subject_v1_full16k", top_n=22, min_edge_weight=12)
+        # Missing-link prediction among the displayed hubs (non-edges in full graph)
+        nodes = list(sub.nodes())
+        non_edges = [(a, b) for a, b in itertools.combinations(nodes, 2)
+                     if not G_full.has_edge(a, b)]
+        miss_rows = []
+        if non_edges:
+            aa = dict(((a, b), s) for a, b, s in nx.adamic_adar_index(G_full, non_edges))
+            ra = dict(((a, b), s) for a, b, s in nx.resource_allocation_index(G_full, non_edges))
+            for a, b in non_edges:
+                cn = len(list(nx.common_neighbors(G_full, a, b)))
+                miss_rows.append({
+                    "Subject A": a,
+                    "Subject B": b,
+                    "Shared neighbours": cn,
+                    "Adamic–Adar": round(aa.get((a, b), 0.0), 2),
+                    "Resource allocation": round(ra.get((a, b), 0.0), 3),
+                })
+        missing_df = (
+            pd.DataFrame(miss_rows)
+            .sort_values("Adamic–Adar", ascending=False)
+            .reset_index(drop=True)
+            if miss_rows else pd.DataFrame()
+        )
+        return sub, community_map, missing_df
+
+    G_subject, subject_comm_map, subject_missing_df = build_subject_network(
+        "subject_v2_full16k", top_n=22, min_edge_weight=12
+    )
+
+    TIE_METRICS = {
+        "Co-occurrence count": "weight",
+        "Association strength (chance-corrected)": "assoc",
+        "Jaccard index": "jaccard",
+    }
+    tie_label = st.radio(
+        "Edge weighting (tie strength)",
+        list(TIE_METRICS.keys()), index=0, horizontal=True, key="subj_tie_metric",
+    )
+    tie_attr = TIE_METRICS[tie_label]
+
+    # Re-weight a display copy so edge thickness reflects the chosen tie strength
+    G_subject_disp = G_subject.copy()
+    for u, v, d in G_subject_disp.edges(data=True):
+        d["weight"] = d.get(tie_attr, 0.0)
+
     subj_png, subj_svg = render_collab_matplotlib(
-        G_subject, subject_comm_map, legend_unit="subjects", abbreviate=False,
+        G_subject_disp, subject_comm_map, legend_unit="subjects", abbreviate=False,
         label_fontsize=13, wrap_width=16, min_sep=0.32, offset_base=0.40,
-        iterations=120, fig_w=16, fig_h=12.5,
+        iterations=120, fig_w=16, fig_h=12.5, cache_key=f"subj_{tie_attr}",
     )
     st.image(subj_png, use_container_width=True)
+    st.caption(
+        f"Edge thickness now reflects **{tie_label.lower()}**. Co-occurrence count = raw "
+        "shared projects; association strength = shared projects relative to what chance "
+        "would predict from each subject's frequency (>1 = stronger than chance); Jaccard = "
+        "shared / combined project sets. Node selection (top 22 by degree) and communities "
+        "are unchanged — only edge weighting differs."
+    )
 
     sdl1, sdl2 = st.columns(2)
     with sdl1:
         st.download_button(
             "📥 Download PNG (300 DPI)", data=subj_png,
-            file_name="ukri_subject_cooccurrence_network.png",
+            file_name=f"ukri_subject_cooccurrence_network_{tie_attr}.png",
             mime="image/png", key="subj_png_dl",
         )
     with sdl2:
         st.download_button(
             "📥 Download SVG (vector)", data=subj_svg,
-            file_name="ukri_subject_cooccurrence_network.svg",
+            file_name=f"ukri_subject_cooccurrence_network_{tie_attr}.svg",
             mime="image/svg+xml", key="subj_svg_dl",
         )
+
+    # Edge tie-strength table (the numbers behind the edge thickness)
+    tie_rows = [
+        {"Subject A": u, "Subject B": v,
+         "Shared projects": int(d.get("weight", 0)),
+         "Association strength": round(d.get("assoc", 0.0), 2),
+         "Jaccard": round(d.get("jaccard", 0.0), 3)}
+        for u, v, d in G_subject.edges(data=True)
+    ]
+    if tie_rows:
+        sort_col = {
+            "weight": "Shared projects",
+            "assoc": "Association strength",
+            "jaccard": "Jaccard",
+        }[tie_attr]
+        tie_tbl = (
+            pd.DataFrame(tie_rows)
+            .sort_values(sort_col, ascending=False)
+            .reset_index(drop=True)
+        )
+        st.markdown(
+            '<div style="font-weight:600;color:#2e7d5e;margin-top:0.4rem">'
+            f"Edge tie strengths — sorted by {tie_label.lower()}</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "The numbers behind the edge thickness. Association strength > 1 = stronger "
+            "than chance; < 1 = weaker than chance."
+        )
+        st.dataframe(tie_tbl.head(15), use_container_width=True, hide_index=True)
 
     # Subject community membership summary
     subj_members: dict[int, list[str]] = {}
@@ -1666,6 +1759,26 @@ with tab5:
                 f'<span style="font-size:0.8rem">{preview}</span>',
                 unsafe_allow_html=True,
             )
+
+    # Predicted missing links (interdisciplinary white space)
+    st.markdown(
+        '<div style="font-weight:600;color:#2e7d5e;margin-top:0.6rem">'
+        "Predicted missing links — interdisciplinary white space</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Pairs of leading subjects that **never co-occur** on a project yet share many "
+        "common neighbours, ranked by the Adamic–Adar link-prediction score (higher = more "
+        "structurally expected, i.e. a stronger candidate interdisciplinary gap). "
+        "Resource allocation is a second, stricter predictor shown for comparison."
+    )
+    if subject_missing_df is not None and not subject_missing_df.empty:
+        st.dataframe(
+            subject_missing_df.head(10),
+            use_container_width=True, hide_index=True,
+        )
+    else:
+        st.info("All leading subjects are already directly connected — no missing links to predict.")
 
     # ── Graph 1c: Organisation–Project Bipartite Network (from JSON files) ────
     st.markdown('<div class="section-header">Organisation–Project Network (Sustainability Collaborations)</div>', unsafe_allow_html=True)
