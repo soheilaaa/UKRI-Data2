@@ -1743,6 +1743,13 @@ with tab5:
             "than chance; < 1 = weaker than chance."
         )
         st.dataframe(tie_tbl.head(15), use_container_width=True, hide_index=True)
+        st.download_button(
+            f"📥 Download all {len(tie_tbl)} links (CSV)",
+            data=tie_tbl.to_csv(index=False).encode("utf-8"),
+            file_name="ukri_subject_cooccurrence_links.csv",
+            mime="text/csv",
+            key="subj_links_csv",
+        )
 
     # Subject community membership summary
     subj_members: dict[int, list[str]] = {}
@@ -1776,6 +1783,13 @@ with tab5:
         st.dataframe(
             subject_missing_df.head(10),
             use_container_width=True, hide_index=True,
+        )
+        st.download_button(
+            f"📥 Download all {len(subject_missing_df)} predicted links (CSV)",
+            data=subject_missing_df.to_csv(index=False).encode("utf-8"),
+            file_name="ukri_subject_predicted_missing_links.csv",
+            mime="text/csv",
+            key="subj_missing_csv",
         )
     else:
         st.info("All leading subjects are already directly connected — no missing links to predict.")
